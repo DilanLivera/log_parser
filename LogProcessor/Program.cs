@@ -27,29 +27,90 @@ fileOption.AddValidator(result =>
     }
 });
 
-Option<string> regexOption = new(aliases: ["--regex", "-r"],
-                                 description: "Regular expression pattern with named capture groups for parsing log statements. Example: --regex \"(?<Timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}) \\[(?<Level>\\w+)\\] (?<Message>.*)\"")
-                             {
-                                 IsRequired = true
-                             };
+Option<string[]> patternsOption = new(aliases: ["--patterns", "-p"],
+                                      description: "Multiple regular expression patterns with named capture groups for parsing log statements. Each pattern must include the correlation field. Example: --patterns \"(?<RequestId>\\w+) HTTP (?<Method>\\w+)\" \"(?<RequestId>\\w+) Query: (?<SQL>.*)\"")
+                                  {
+                                      IsRequired = true
+                                  };
 
-regexOption.AddValidator(result =>
+Option<string> correlationFieldOption = new(aliases: ["--correlation-field", "-c"],
+                                            description: "Name of the correlation field used to group related log entries. This field must be present as a named capture group in all patterns. Example: --correlation-field \"RequestId\"")
+                                        {
+                                            IsRequired = true
+                                        };
+
+// Add validator for patterns
+patternsOption.AddValidator(result =>
 {
-    string? regexPattern = result.GetValueForOption(regexOption);
-    if (string.IsNullOrWhiteSpace(regexPattern))
+    string[]? patterns = result.GetValueForOption(patternsOption);
+    if (patterns == null || patterns.Length == 0)
     {
-        result.ErrorMessage = "Regex pattern cannot be empty";
+        result.ErrorMessage = "At least one pattern must be provided";
 
         return;
     }
 
-    try
+    if (patterns.Length > 3)
     {
-        _ = new Regex(regexPattern);
+        result.ErrorMessage = "Maximum of 3 patterns allowed";
+
+        return;
     }
-    catch (ArgumentException ex)
+
+    foreach (string pattern in patterns)
     {
-        result.ErrorMessage = $"Invalid regex pattern: {ex.Message}";
+        if (string.IsNullOrWhiteSpace(pattern))
+        {
+            result.ErrorMessage = "Pattern cannot be empty";
+
+            return;
+        }
+
+        try
+        {
+            _ = new Regex(pattern);
+        }
+        catch (ArgumentException ex)
+        {
+            result.ErrorMessage = $"Invalid regex pattern '{pattern}': {ex.Message}";
+
+            return;
+        }
+    }
+});
+
+// Add validator for correlation field
+correlationFieldOption.AddValidator(result =>
+{
+    string? correlationField = result.GetValueForOption(correlationFieldOption);
+    if (string.IsNullOrWhiteSpace(correlationField))
+    {
+        result.ErrorMessage = "Correlation field cannot be empty";
+
+        return;
+    }
+
+    // Validate that correlation field appears in all patterns
+    string[]? patterns = result.GetValueForOption(patternsOption);
+    if (patterns != null)
+    {
+        foreach (string pattern in patterns)
+        {
+            try
+            {
+                Regex regex = new(pattern);
+                if (!regex.GetGroupNames().Contains(correlationField))
+                {
+                    result.ErrorMessage = $"Correlation field '{correlationField}' must be present as a named capture group in pattern: {pattern}";
+
+                    return;
+                }
+            }
+            catch (ArgumentException)
+            {
+                // Pattern validation will be caught by patterns validator
+            }
+        }
     }
 });
 
@@ -76,11 +137,12 @@ maxRowsOption.AddValidator(result =>
 });
 
 rootCommand.AddOption(fileOption);
-rootCommand.AddOption(regexOption);
+rootCommand.AddOption(patternsOption);
+rootCommand.AddOption(correlationFieldOption);
 rootCommand.AddOption(outputFileOption);
 rootCommand.AddOption(maxRowsOption);
 
-rootCommand.SetHandler(handle: async (filePath, regexPattern, outputFile, maxRows) =>
+rootCommand.SetHandler(handle: async (filePath, patterns, correlationField, outputFile, maxRows) =>
                        {
                            Rule rule = new(title: "[bold blue]Log File Processor[/]")
                                        {
@@ -91,13 +153,14 @@ rootCommand.SetHandler(handle: async (filePath, regexPattern, outputFile, maxRow
 
                            FileReaderStep reader = new();
                            LogParserStep parser = new();
+                           CorrelationStep correlationStep = new();
                            DataProcessorStep processor = new();
                            FileSaverStep fileSaver = new();
                            DisplayStep display = new(maxRows);
 
-                           LogProcessingPipeline pipeline = new(reader, parser, processor, fileSaver, display);
+                           LogProcessingPipeline pipeline = new(reader, parser, correlationStep, processor, fileSaver, display);
 
-                           Result<ProcessingResult> pipelineResult = await pipeline.ExecuteAsync(filePath, regexPattern, outputFile);
+                           Result<ProcessingResult> pipelineResult = await pipeline.ExecuteAsync(filePath, patterns, correlationField, outputFile);
 
                            if (pipelineResult.IsFailure)
                            {
@@ -115,7 +178,8 @@ rootCommand.SetHandler(handle: async (filePath, regexPattern, outputFile, maxRow
 
                        },
                        fileOption,
-                       regexOption,
+                       patternsOption,
+                       correlationFieldOption,
                        outputFileOption,
                        maxRowsOption);
 

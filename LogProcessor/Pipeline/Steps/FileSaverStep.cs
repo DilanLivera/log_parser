@@ -48,36 +48,26 @@ public sealed class FileSaverStep : IPipelineStep<(ProcessingResult result, stri
 
                     break;
                 case ".csv":
-                    List<string> lines = [];
-
-                    if (result.ColumnNames.Count <= 0)
+                    if (result.IsCorrelationEnabled && result.CorrelationGroups.Count > 0)
                     {
-                        AnsiConsole.MarkupLine("[yellow]No columns detected.[/]");
+                        await SaveCorrelationGroupsCsv(outputFile, result, cancellationToken);
                     }
                     else
                     {
-                        List<string> columns = result.ColumnNames.OrderBy(c => c).ToList();
-                        lines.Add(string.Join(",", columns.Select(c => $"\"{c}\"")));
-
-                        if (result.ParsedEntries.Count == 0)
-                        {
-                            AnsiConsole.MarkupLine("[yellow]No data to export. Creating CSV with headers only.[/]");
-                        }
-                        else
-                        {
-                            foreach (LogEntry entry in result.ParsedEntries)
-                            {
-                                IEnumerable<string> values = columns.Select(col => entry.ExtractedData.TryGetValue(col, out string? value) ? $"\"{value}\"" : "\"\"");
-                                lines.Add(string.Join(",", values));
-                            }
-                        }
-
-                        await File.WriteAllLinesAsync(outputFile, lines, cancellationToken);
+                        await SaveRegularCsv(outputFile, result, cancellationToken);
                     }
 
                     break;
                 default:
-                    AnsiConsole.MarkupLine($"[yellow]Unsupported output format '{extension}'.[/]");
+                    AnsiConsole.MarkupLine($"[yellow]Unsupported output format '{extension}'. Saving as JSON instead.[/]");
+
+                    string jsonOutputPath = Path.ChangeExtension(outputFile, ".json");
+                    string defaultJson = JsonSerializer.Serialize(result,
+                                                                  new JsonSerializerOptions
+                                                                  {
+                                                                      PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true
+                                                                  });
+                    await File.WriteAllTextAsync(jsonOutputPath, contents: defaultJson, cancellationToken);
 
                     break;
             }
@@ -87,6 +77,91 @@ public sealed class FileSaverStep : IPipelineStep<(ProcessingResult result, stri
         catch (Exception ex)
         {
             return await Task.FromResult(Result<ProcessingResult>.Failure(ex));
+        }
+    }
+
+    /// <summary>
+    /// Saves correlation groups to a CSV file
+    /// </summary>
+    private static async Task SaveCorrelationGroupsCsv(string outputFile, ProcessingResult result, CancellationToken cancellationToken)
+    {
+        List<string> lines =
+        [
+            "\"CorrelationId\",\"EntryCount\",\"EarliestTimestamp\",\"LatestTimestamp\",\"LineNumbers\",\"RawLines\""
+        ];
+
+        if (result.CorrelationGroups.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]No correlation groups to export. Creating CSV with headers only.[/]");
+        }
+        else
+        {
+            foreach (CorrelationGroup group in result.CorrelationGroups)
+            {
+                string lineNumbers = string.Join(";", group.Entries.Select(e => e.LineNumber));
+                string rawLines = string.Join(" | ", group.Entries.Select(e => e.RawLine.Replace("\"", "\"\"")));
+
+                lines.Add($"\"{group.CorrelationId}\"," +
+                          $"{group.EntryCount}," +
+                          $"\"{group.EarliestTimestamp ?? ""}\"," +
+                          $"\"{group.LatestTimestamp ?? ""}\"," +
+                          $"\"{lineNumbers}\"," +
+                          $"\"{rawLines}\"");
+            }
+        }
+
+        await File.WriteAllLinesAsync(outputFile, lines, cancellationToken);
+    }
+
+    /// <summary>
+    /// Saves regular log entries to a CSV file
+    /// </summary>
+    private static async Task SaveRegularCsv(string outputFile, ProcessingResult result, CancellationToken cancellationToken)
+    {
+        List<string> lines = [];
+
+        if (result.ColumnNames.Count <= 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]No columns detected.[/]");
+        }
+        else
+        {
+            List<string> columns = result.ColumnNames.OrderBy(c => c).ToList();
+
+            // Add LineNumber and PatternIndex to columns if correlation is enabled
+            if (result.IsCorrelationEnabled)
+            {
+                columns.Insert(0, "LineNumber");
+                columns.Insert(1, "PatternIndex");
+            }
+
+            lines.Add(string.Join(",", columns.Select(c => $"\"{c}\"")));
+
+            if (result.ParsedEntries.Count == 0)
+            {
+                AnsiConsole.MarkupLine("[yellow]No data to export. Creating CSV with headers only.[/]");
+            }
+            else
+            {
+                foreach (LogEntry entry in result.ParsedEntries)
+                {
+                    List<string> values = [];
+
+                    if (result.IsCorrelationEnabled)
+                    {
+                        values.Add($"{entry.LineNumber}");
+                        values.Add($"{entry.PatternIndex}");
+                    }
+
+                    // Add extracted data values
+                    values.AddRange(result.ColumnNames.OrderBy(c => c)
+                                          .Select(col => entry.ExtractedData.TryGetValue(col, out string? value) ? $"\"{value}\"" : "\"\""));
+
+                    lines.Add(string.Join(",", values));
+                }
+            }
+
+            await File.WriteAllLinesAsync(outputFile, lines, cancellationToken);
         }
     }
 }

@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace LogProcessor.Models;
 
 /// <summary>
@@ -8,7 +10,22 @@ public sealed class ProcessingResult
     /// <summary>
     /// Collection of successfully parsed log entries
     /// </summary>
-    public IReadOnlyList<LogEntry> ParsedEntries { get; init; } = [];
+    public IReadOnlyList<LogEntry> ParsedEntries { get; init; } = Array.Empty<LogEntry>();
+
+    /// <summary>
+    /// Collection of correlation groups (grouped log entries by correlation ID)
+    /// </summary>
+    public IReadOnlyList<CorrelationGroup> CorrelationGroups { get; init; } = Array.Empty<CorrelationGroup>();
+
+    /// <summary>
+    /// Name of the correlation field used for grouping (if correlation is enabled)
+    /// </summary>
+    public string? CorrelationField { get; init; }
+
+    /// <summary>
+    /// Patterns used for parsing the log entries
+    /// </summary>
+    public IReadOnlyList<string> Patterns { get; init; } = Array.Empty<string>();
 
     /// <summary>
     /// Total number of lines processed
@@ -28,10 +45,16 @@ public sealed class ProcessingResult
     /// <summary>
     /// Set of all column names (capture group names) found across all entries
     /// </summary>
+    [JsonConverter(typeof(ReadOnlySetJsonConverter))]
     public IReadOnlySet<string> ColumnNames { get; init; } = new HashSet<string>();
 
     /// <summary>
     /// Processing statistics and summary information
     /// </summary>
     public IReadOnlyDictionary<string, object> Statistics { get; init; } = new Dictionary<string, object>();
+
+    /// <summary>
+    /// Whether correlation grouping was enabled for this processing result
+    /// </summary>
+    public bool IsCorrelationEnabled => !string.IsNullOrEmpty(CorrelationField);
 }

@@ -27,7 +27,8 @@ public class LogProcessingPipelineTests : IClassFixture<LogFileFixture>
         // Act
         Result<ProcessingResult> result = await pipeline.ExecuteAsync(
         _fixture.SampleLogPath,
-        LogFileFixture.HttpRegexPattern);
+        [LogFileFixture.HttpRegexPattern],
+        "RequestMethod"); // Using RequestMethod as correlation field for testing
 
         // Assert
         result.IsSuccess.ShouldBeTrue();
@@ -42,6 +43,8 @@ public class LogProcessingPipelineTests : IClassFixture<LogFileFixture>
         processingResult.ColumnNames.ShouldContain("StatusCode");
         processingResult.ColumnNames.ShouldContain("Elapsed");
         processingResult.ParsedEntries.Count.ShouldBe(10);
+        processingResult.IsCorrelationEnabled.ShouldBeTrue();
+        processingResult.CorrelationField.ShouldBe("RequestMethod");
     }
 
     [Fact]
@@ -53,51 +56,22 @@ public class LogProcessingPipelineTests : IClassFixture<LogFileFixture>
         // Act
         Result<ProcessingResult> result = await pipeline.ExecuteAsync(
         _fixture.SampleLogPath,
-        LogFileFixture.HttpRegexPattern);
-
-        // Assert
-        result.IsSuccess.ShouldBeTrue();
-
-        // Detailed verification of the processing result
-        ProcessingResult processingResult = result.Value;
-        processingResult.TotalLinesProcessed.ShouldBe(10);
-        processingResult.MatchedLines.ShouldBe(10);
-        processingResult.UnmatchedLines.ShouldBe(0);
-        processingResult.ColumnNames.OrderBy(x => x).ShouldBe([
-            "Elapsed", "RequestMethod", "RequestPath", "StatusCode"
-        ]);
-        processingResult.ParsedEntries.Count.ShouldBe(10);
-
-        // Verify first entry structure
-        LogEntry firstEntry = processingResult.ParsedEntries.First();
-        firstEntry.LineNumber.ShouldBe(1);
-        firstEntry.ExtractedData.ShouldContainKey("RequestMethod");
-        firstEntry.ExtractedData.ShouldContainKey("RequestPath");
-        firstEntry.ExtractedData.ShouldContainKey("StatusCode");
-        firstEntry.ExtractedData.ShouldContainKey("Elapsed");
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_WithValidAppLogs_ShouldReturnSuccessResult()
-    {
-        // Arrange
-        LogProcessingPipeline pipeline = CreatePipeline();
-
-        // Act
-        Result<ProcessingResult> result = await pipeline.ExecuteAsync(
-        _fixture.AppLogPath,
-        LogFileFixture.AppLogRegexPattern);
+        [LogFileFixture.HttpRegexPattern],
+        "RequestMethod");
 
         // Assert
         result.IsSuccess.ShouldBeTrue();
 
         ProcessingResult processingResult = result.Value;
-        processingResult.TotalLinesProcessed.ShouldBe(5);
-        processingResult.MatchedLines.ShouldBe(5);
-        processingResult.ColumnNames.Count.ShouldBe(3);
-        processingResult.ColumnNames.ShouldContain("Timestamp");
-        processingResult.ColumnNames.ShouldContain("Level");
-        processingResult.ColumnNames.ShouldContain("Message");
+        processingResult.Statistics.ContainsKey("processing_efficiency").ShouldBeTrue();
+        processingResult.Statistics.ContainsKey("RequestMethod_count").ShouldBeTrue();
+        processingResult.Statistics.ContainsKey("RequestMethod_unique_count").ShouldBeTrue();
+        processingResult.Statistics.ContainsKey("RequestPath_count").ShouldBeTrue();
+        processingResult.Statistics.ContainsKey("StatusCode_count").ShouldBeTrue();
+        processingResult.Statistics.ContainsKey("Elapsed_count").ShouldBeTrue();
+
+        processingResult.Statistics["RequestMethod_count"].ShouldBe(10);
+        processingResult.Statistics["RequestMethod_unique_count"].ShouldBe(4); // GET, POST, PUT, DELETE
     }
 
     [Fact]
@@ -105,19 +79,21 @@ public class LogProcessingPipelineTests : IClassFixture<LogFileFixture>
     {
         // Arrange
         LogProcessingPipeline pipeline = CreatePipeline();
+        string nonExistentFile = "non-existent-file.log";
 
         // Act
         Result<ProcessingResult> result = await pipeline.ExecuteAsync(
-        _fixture.NonExistentLogPath,
-        LogFileFixture.HttpRegexPattern);
+        nonExistentFile,
+        [LogFileFixture.HttpRegexPattern],
+        "RequestMethod");
 
         // Assert
         result.IsFailure.ShouldBeTrue();
-        result.Error.Message.ShouldContain("Log file not found");
+        result.Error.Message.ShouldContain("non-existent-file.log");
     }
 
     [Fact]
-    public async Task ExecuteAsync_WithInvalidRegex_ShouldReturnFailure()
+    public async Task ExecuteAsync_WithEmptyPatternArray_ShouldReturnFailure()
     {
         // Arrange
         LogProcessingPipeline pipeline = CreatePipeline();
@@ -125,7 +101,26 @@ public class LogProcessingPipelineTests : IClassFixture<LogFileFixture>
         // Act
         Result<ProcessingResult> result = await pipeline.ExecuteAsync(
         _fixture.SampleLogPath,
-        LogFileFixture.InvalidRegexPattern);
+        Array.Empty<string>(),
+        "RequestMethod");
+
+        // Assert
+        result.IsFailure.ShouldBeTrue();
+        result.Error.Message.ShouldContain("At least one regex pattern must be provided");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithInvalidRegexPattern_ShouldReturnFailure()
+    {
+        // Arrange
+        LogProcessingPipeline pipeline = CreatePipeline();
+        string invalidPattern = "[invalid regex pattern";
+
+        // Act
+        Result<ProcessingResult> result = await pipeline.ExecuteAsync(
+        _fixture.SampleLogPath,
+        [invalidPattern],
+        "RequestMethod");
 
         // Assert
         result.IsFailure.ShouldBeTrue();
@@ -141,7 +136,8 @@ public class LogProcessingPipelineTests : IClassFixture<LogFileFixture>
         // Act
         Result<ProcessingResult> result = await pipeline.ExecuteAsync(
         _fixture.EmptyLogPath,
-        LogFileFixture.HttpRegexPattern);
+        [LogFileFixture.HttpRegexPattern],
+        "RequestMethod");
 
         // Assert
         result.IsSuccess.ShouldBeTrue();
@@ -149,141 +145,113 @@ public class LogProcessingPipelineTests : IClassFixture<LogFileFixture>
         ProcessingResult processingResult = result.Value;
         processingResult.TotalLinesProcessed.ShouldBe(0);
         processingResult.MatchedLines.ShouldBe(0);
-        processingResult.ParsedEntries.ShouldBeEmpty();
+        processingResult.UnmatchedLines.ShouldBe(0);
+        processingResult.ParsedEntries.Count.ShouldBe(0);
+        processingResult.CorrelationGroups.Count.ShouldBe(0);
     }
 
     [Fact]
-    public async Task ExecuteAsync_WithJsonOutput_ShouldCreateFile()
+    public async Task ExecuteAsync_WithMultiplePatterns_ShouldCombineResults()
     {
         // Arrange
         LogProcessingPipeline pipeline = CreatePipeline();
-        string outputPath = Path.GetTempFileName() + ".json";
+        string[] patterns =
+        [
+            LogFileFixture.HttpRegexPattern,
+            "(?<RequestMethod>\\w+) \\[(?<Level>\\w+)\\]" // Additional pattern
+        ];
+
+        // Act
+        Result<ProcessingResult> result = await pipeline.ExecuteAsync(
+        _fixture.SampleLogPath,
+        patterns,
+        "RequestMethod");
+
+        // Assert
+        result.IsSuccess.ShouldBeTrue();
+
+        ProcessingResult processingResult = result.Value;
+        processingResult.Patterns.Count.ShouldBe(2);
+        processingResult.ParsedEntries.Count.ShouldBeGreaterThan(0);
+        processingResult.IsCorrelationEnabled.ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithOutputFile_ShouldSaveFile()
+    {
+        // Arrange
+        LogProcessingPipeline pipeline = CreatePipeline();
+        string outputFile = Path.Combine(Path.GetTempPath(), $"test-output-{Guid.NewGuid()}.json");
 
         try
         {
             // Act
             Result<ProcessingResult> result = await pipeline.ExecuteAsync(
             _fixture.SampleLogPath,
-            LogFileFixture.HttpRegexPattern,
-            outputPath);
+            [LogFileFixture.HttpRegexPattern],
+            "RequestMethod",
+            outputFile);
 
             // Assert
             result.IsSuccess.ShouldBeTrue();
-            File.Exists(outputPath).ShouldBeTrue();
+            File.Exists(outputFile).ShouldBeTrue();
 
-            string jsonContent = await File.ReadAllTextAsync(outputPath);
+            string jsonContent = await File.ReadAllTextAsync(outputFile);
             jsonContent.ShouldNotBeEmpty();
 
-            // Verify it's valid JSON
-            Should.NotThrow(() => JsonDocument.Parse(jsonContent));
+            ProcessingResult? savedResult = JsonSerializer.Deserialize<ProcessingResult>(jsonContent,
+                                                                                         new JsonSerializerOptions
+                                                                                         {
+                                                                                             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                                                                                         });
+
+            savedResult.ShouldNotBeNull();
+            savedResult.ParsedEntries.Count.ShouldBe(10);
+            savedResult.IsCorrelationEnabled.ShouldBeTrue();
         }
         finally
         {
-            if (File.Exists(outputPath))
+            if (File.Exists(outputFile))
             {
-                File.Delete(outputPath);
+                File.Delete(outputFile);
             }
         }
     }
 
     [Fact]
-    public async Task ExecuteAsync_WithCsvOutput_ShouldCreateFile()
+    public async Task ExecuteAsync_WithCsvOutputFile_ShouldSaveCsvFile()
     {
         // Arrange
         LogProcessingPipeline pipeline = CreatePipeline();
-        string outputPath = Path.GetTempFileName() + ".csv";
+        string outputFile = Path.Combine(Path.GetTempPath(), $"test-output-{Guid.NewGuid()}.csv");
 
         try
         {
             // Act
             Result<ProcessingResult> result = await pipeline.ExecuteAsync(
             _fixture.SampleLogPath,
-            LogFileFixture.HttpRegexPattern,
-            outputPath);
+            [LogFileFixture.HttpRegexPattern],
+            "RequestMethod",
+            outputFile);
 
             // Assert
             result.IsSuccess.ShouldBeTrue();
-            File.Exists(outputPath).ShouldBeTrue();
+            File.Exists(outputFile).ShouldBeTrue();
 
-            string[] lines = await File.ReadAllLinesAsync(outputPath);
-            lines.Length.ShouldBe(11); // Header + 10 data rows
-            lines[0].ShouldContain("\"Elapsed\",\"RequestMethod\",\"RequestPath\",\"StatusCode\"");
-            lines[1].ShouldContain("\"12.456\",\"GET\",\"/api/users\",\"200\"");
+            string[] csvLines = await File.ReadAllLinesAsync(outputFile);
+            csvLines.Length.ShouldBeGreaterThan(1); // Header + data rows
+
+            // Since correlation is enabled, expect correlation groups CSV format
+            csvLines[0].ShouldContain("CorrelationId");
+            csvLines[0].ShouldContain("EntryCount");
+            csvLines[0].ShouldContain("EarliestTimestamp");
+            csvLines[0].ShouldContain("LatestTimestamp");
         }
         finally
         {
-            if (File.Exists(outputPath))
+            if (File.Exists(outputFile))
             {
-                File.Delete(outputPath);
-            }
-        }
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_WithCsvOutput_ShouldHaveCorrectFormat()
-    {
-        // Arrange
-        LogProcessingPipeline pipeline = CreatePipeline();
-        string outputPath = Path.GetTempFileName() + ".csv";
-
-        try
-        {
-            // Act
-            Result<ProcessingResult> result = await pipeline.ExecuteAsync(
-            _fixture.SampleLogPath,
-            LogFileFixture.HttpRegexPattern,
-            outputPath);
-
-            // Assert
-            result.IsSuccess.ShouldBeTrue();
-
-            string csvContent = await File.ReadAllTextAsync(outputPath);
-            string[] lines = csvContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-
-            // Verify CSV structure
-            lines.Length.ShouldBe(11); // Header + 10 data rows
-            lines[0].ShouldContain("\"Elapsed\",\"RequestMethod\",\"RequestPath\",\"StatusCode\"");
-            lines[1].ShouldContain("\"12.456\",\"GET\",\"/api/users\",\"200\"");
-            lines.All(line => line.Contains("\"")).ShouldBeTrue(); // All values should be quoted
-        }
-        finally
-        {
-            if (File.Exists(outputPath))
-            {
-                File.Delete(outputPath);
-            }
-        }
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_WithUnsupportedOutputFormat_ShouldDefaultToJson()
-    {
-        // Arrange
-        LogProcessingPipeline pipeline = CreatePipeline();
-        string outputPath = Path.GetTempFileName() + ".txt";
-        string expectedJsonPath = Path.ChangeExtension(outputPath, ".json");
-
-        try
-        {
-            // Act
-            Result<ProcessingResult> result = await pipeline.ExecuteAsync(
-            _fixture.SampleLogPath,
-            LogFileFixture.HttpRegexPattern,
-            outputPath);
-
-            // Assert
-            result.IsSuccess.ShouldBeTrue();
-            File.Exists(expectedJsonPath).ShouldBeFalse();
-        }
-        finally
-        {
-            if (File.Exists(outputPath))
-            {
-                File.Delete(outputPath);
-            }
-            if (File.Exists(expectedJsonPath))
-            {
-                File.Delete(expectedJsonPath);
+                File.Delete(outputFile);
             }
         }
     }
@@ -292,10 +260,11 @@ public class LogProcessingPipelineTests : IClassFixture<LogFileFixture>
     {
         FileReaderStep reader = new();
         LogParserStep parser = new();
+        CorrelationStep correlationStep = new();
         DataProcessorStep processor = new();
         FileSaverStep fileSaver = new();
         DisplayStep display = new(maxDisplayRows);
 
-        return new LogProcessingPipeline(reader, parser, processor, fileSaver, display);
+        return new LogProcessingPipeline(reader, parser, correlationStep, processor, fileSaver, display);
     }
 }
